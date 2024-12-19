@@ -19,7 +19,7 @@ static struct timer_list reseter;
 static atomic64_t mark_page_accessed_count = ATOMIC64_INIT(0);
 static atomic64_t mark_buffer_dirty_count = ATOMIC64_INIT(0);
 static atomic64_t add_to_page_cache_lru_count = ATOMIC64_INIT(0);
-static atomic64_t account_page_dirtied_count = ATOMIC64_INIT(0);
+static atomic64_t folio_account_dirtied = ATOMIC64_INIT(0);
 
 static struct kprobe kp_mpa, kp_mbd, kp_apcl, kp_apd;
 
@@ -28,7 +28,7 @@ static void reset_counters(struct timer_list *unused)
     atomic64_set(&mark_page_accessed_count, 0);
     atomic64_set(&mark_buffer_dirty_count, 0);
     atomic64_set(&add_to_page_cache_lru_count, 0);
-    atomic64_set(&account_page_dirtied_count, 0);
+    atomic64_set(&folio_account_dirtied, 0);
 
     mod_timer(&reseter,
 	      jiffies + msecs_to_jiffies(RESET_PERIOD));
@@ -41,7 +41,7 @@ static int cache_stat_show(struct seq_file *m, void *v) {
 	mpa = atomic64_read(&mark_page_accessed_count);
 	mbd = atomic64_read(&mark_buffer_dirty_count);
 	apcl = atomic64_read(&add_to_page_cache_lru_count);
-	apd = atomic64_read(&account_page_dirtied_count);
+	apd = atomic64_read(&folio_account_dirtied);
 
 	total = mpa >= mbd ? mpa - mbd : 0;
 	misses = apcl >= apd ? apcl - apd : 0;  // Use a safe comparison
@@ -87,8 +87,8 @@ static int apcl_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 0;
 }
 
-static int apd_handler_pre(struct kprobe *p, struct pt_regs *regs) {
-	atomic64_inc(&account_page_dirtied_count);
+static int fad_handler_pre(struct kprobe *p, struct pt_regs *regs) {
+	atomic64_inc(&folio_account_dirtied);
 	return 0;
 }
 
@@ -101,22 +101,34 @@ static int __init cache_stat_init(void) {
 	kp_mpa.pre_handler = mpa_handler_pre;
 	kp_mpa.symbol_name = "mark_page_accessed";
 	ret = register_kprobe(&kp_mpa);
-	if (ret < 0) goto fail;
+	if (ret < 0){
+		printk(KERN_ERR "Failed to register kprobe %s\n","mark_page_accessed");
+		 goto fail;
+	}
 
 	kp_mbd.pre_handler = mbd_handler_pre;
 	kp_mbd.symbol_name = "mark_buffer_dirty";
 	ret = register_kprobe(&kp_mbd);
-	if (ret < 0) goto unregister_mpa;
+	if (ret < 0) {
+		printk(KERN_ERR "Failed to register kprobe %s\n","mark_buffer_dirty");	
+		goto unregister_mpa;
+	}
 
 	kp_apcl.pre_handler = apcl_handler_pre;
 	kp_apcl.symbol_name = "add_to_page_cache_lru";
 	ret = register_kprobe(&kp_apcl);
-	if (ret < 0) goto unregister_mbd;
+	if (ret < 0) {
+		printk(KERN_ERR "Failed to register kprobe %s\n","add_to_page_cache_lru");
+		goto unregister_mbd;
+	}
 
-	kp_apd.pre_handler = apd_handler_pre;
-	kp_apd.symbol_name = "account_page_dirtied";
+	kp_apd.pre_handler = fad_handler_pre;
+	kp_apd.symbol_name = "folio_account_dirtied";
 	ret = register_kprobe(&kp_apd);
-	if (ret < 0) goto unregister_apcl;
+	if (ret < 0) {
+		printk(KERN_ERR "Failed to register kprobe %s\n","folio_account_dirtied");	
+		goto unregister_apcl;
+	}
 
 	proc_create("cache_stat", 0, NULL, &cache_stat_fops);
 	printk(KERN_INFO "Cache stat module loaded.\n");
